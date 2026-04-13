@@ -586,3 +586,42 @@ resource "google_cloud_run_v2_service_iam_member" "api_gateway_invokes_billing_s
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.api_gateway.email}"
 }
+
+resource "google_storage_bucket" "invoice_archive" {
+  name          = "brightwave-prod-invoice-archive"
+  project       = var.project_id
+  location      = var.region
+  storage_class = "STANDARD"
+
+  uniform_bucket_level_access = true
+
+  versioning {
+    enabled = true
+  }
+
+  lifecycle_rule {
+    action {
+      type          = "SetStorageClass"
+      storage_class = "NEARLINE"
+    }
+    condition {
+      age = 30
+    }
+  }
+
+  lifecycle_rule {
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+    condition {
+      age = 365
+    }
+  }
+}
+
+resource "google_storage_bucket_iam_member" "billing_service_invoice_writer" {
+  bucket = google_storage_bucket.invoice_archive.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.billing_service.email}"
+}
