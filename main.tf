@@ -816,3 +816,11 @@ resource "google_bigquery_dataset_iam_member" "user_service_analytics_writer" {
   member     = "serviceAccount:${google_service_account.user_service.email}"
   project    = var.project_id
 }
+
+resource "google_storage_bucket" "audit_logs" {
+  name     = "${var.project_id}-audit-logs"
+  location = var.region
+  project  = var.project_id
+
+  uniform_bucket_level_access = true
+}
