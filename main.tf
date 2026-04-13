@@ -824,3 +824,12 @@ resource "google_storage_bucket" "audit_logs" {
 
   uniform_bucket_level_access = true
 }
+
+resource "google_redis_instance" "session_cache" {
+  name           = "session-cache"
+  tier           = "BASIC"
+  memory_size_gb = 1
+  region         = var.region
+  project        = var.project_id
+  redis_version  = "REDIS_7_0"
+}
