@@ -630,3 +630,189 @@ resource "google_storage_bucket_iam_member" "billing_service_invoice_writer" {
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.billing_service.email}"
 }
+
+# ─── Notifications subsystem ─────────────────────────────────────────────────
+
+resource "google_service_account" "notifications_service" {
+  account_id   = "notifications-service"
+  display_name = "notifications-service Cloud Run"
+  project      = var.project_id
+}
+
+resource "google_pubsub_topic" "user_notifications" {
+  name    = "user-notifications"
+  project = var.project_id
+
+  message_retention_duration = "86400s"
+}
+
+resource "google_pubsub_subscription" "user_notifications_fanout" {
+  name    = "user-notifications-fanout"
+  topic   = google_pubsub_topic.user_notifications.name
+  project = var.project_id
+
+  ack_deadline_seconds       = 30
+  message_retention_duration = "86400s"
+
+  expiration_policy {
+    ttl = ""
+  }
+
+  retry_policy {
+    minimum_backoff = "5s"
+    maximum_backoff = "300s"
+  }
+}
+
+resource "google_secret_manager_secret" "notifications_sendgrid_key" {
+  secret_id = "notifications-sendgrid-key"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_iam_member" "notifications_sendgrid_key" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.notifications_sendgrid_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.notifications_service.email}"
+}
+
+resource "google_pubsub_subscription_iam_member" "notifications_service_subscriber" {
+  project      = var.project_id
+  subscription = google_pubsub_subscription.user_notifications_fanout.name
+  role         = "roles/pubsub.subscriber"
+  member       = "serviceAccount:${google_service_account.notifications_service.email}"
+}
+
+resource "google_pubsub_topic_iam_member" "user_service_notifications_publisher" {
+  project = var.project_id
+  topic   = google_pubsub_topic.user_notifications.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${google_service_account.user_service.email}"
+}
+
+resource "google_pubsub_topic_iam_member" "billing_service_notifications_publisher" {
+  project = var.project_id
+  topic   = google_pubsub_topic.user_notifications.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${google_service_account.billing_service.email}"
+}
+
+resource "google_cloud_run_v2_service" "notifications_service" {
+  name     = "notifications-service"
+  location = var.region
+  project  = var.project_id
+
+  depends_on = [google_pubsub_topic.user_notifications]
+
+  template {
+    service_account = google_service_account.notifications_service.email
+
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 8
+    }
+
+    vpc_access {
+      connector = module.networking.vpc_connector_id
+      egress    = "PRIVATE_RANGES_ONLY"
+    }
+
+    containers {
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/containers/notifications-service:${var.image_tag}"
+
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+      }
+
+      env {
+        name  = "APP_ENV"
+        value = "production"
+      }
+
+      env {
+        name  = "PUBSUB_SUBSCRIPTION"
+        value = google_pubsub_subscription.user_notifications_fanout.id
+      }
+
+      env {
+        name = "SENDGRID_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.notifications_sendgrid_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      ports {
+        container_port = 8080
+      }
+
+      liveness_probe {
+        http_get {
+          path = "/healthz"
+        }
+        initial_delay_seconds = 10
+        period_seconds        = 30
+      }
+    }
+  }
+
+  traffic {
+    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+    percent = 100
+  }
+}
+
+resource "google_cloud_run_v2_service_iam_member" "api_gateway_invokes_notifications_service" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.notifications_service.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.api_gateway.email}"
+}
+
+# ─── Analytics subsystem ─────────────────────────────────────────────────────
+
+resource "google_bigquery_dataset" "analytics" {
+  dataset_id    = "brightwave_analytics"
+  friendly_name = "Brightwave Analytics"
+  location      = "US"
+  project       = var.project_id
+
+  default_table_expiration_ms = 7776000000 # 90 days
+}
+
+resource "google_bigquery_table" "user_events" {
+  dataset_id = google_bigquery_dataset.analytics.dataset_id
+  table_id   = "user_events"
+  project    = var.project_id
+
+  time_partitioning {
+    type  = "DAY"
+    field = "event_time"
+  }
+
+  schema = jsonencode([
+    { name = "event_time", type = "TIMESTAMP", mode = "REQUIRED" },
+    { name = "user_id",    type = "STRING",    mode = "REQUIRED" },
+    { name = "event_name", type = "STRING",    mode = "REQUIRED" },
+    { name = "properties", type = "JSON",      mode = "NULLABLE" },
+  ])
+
+  deletion_protection = false
+}
+
+resource "google_bigquery_dataset_iam_member" "user_service_analytics_writer" {
+  dataset_id = google_bigquery_dataset.analytics.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${google_service_account.user_service.email}"
+  project    = var.project_id
+}
