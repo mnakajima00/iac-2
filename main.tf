@@ -825,26 +825,7 @@ resource "google_storage_bucket" "audit_logs" {
   uniform_bucket_level_access = true
 }
 
-resource "google_redis_instance" "session_cache" {
-  name           = "session-cache"
-  tier           = "BASIC"
-  memory_size_gb = 1
-  region         = var.region
-  project        = var.project_id
-  redis_version  = "REDIS_7_0"
-}
-
 resource "google_pubsub_topic" "audit_events" {
   name    = "audit-events"
   project = var.project_id
-}
-
-resource "google_cloud_tasks_queue" "email_dispatch" {
-  name     = "email-dispatch"
-  location = var.region
-  project  = var.project_id
-
-  rate_limits {
-    max_dispatches_per_second = 10
-  }
 }
