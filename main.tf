@@ -833,3 +833,18 @@ resource "google_redis_instance" "session_cache" {
   project        = var.project_id
   redis_version  = "REDIS_7_0"
 }
+
+resource "google_pubsub_topic" "audit_events" {
+  name    = "audit-events"
+  project = var.project_id
+}
+
+resource "google_cloud_tasks_queue" "email_dispatch" {
+  name     = "email-dispatch"
+  location = var.region
+  project  = var.project_id
+
+  rate_limits {
+    max_dispatches_per_second = 10
+  }
+}
